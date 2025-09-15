@@ -1,121 +1,200 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"> <!-- mobile scaling -->
-  <title>Mobile Geolocation</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      text-align: center;
-      margin: 0;
-      padding: 20px;
-      /* Background image setup */
-      background-image: url("gb.svg"); /* change to your image name or URL */
-      background-size: cover;       /* stretch/scale to cover screen */
-      background-position: center;  /* center the image */
-      background-repeat: no-repeat; /* no tiling */
-      height: 100vh;                /* fill viewport height */
-    }
-    h1 {
-      font-size: 1.6em;
-    }
-    button {
-      display: inline-block;
-      padding: 15px 25px;
-      font-size: 18px;
-      border: none;
-      border-radius: 10px;
-      background-color: #007bff;
-      color: white;
-      cursor: pointer;
-      margin: 10px;
-      width: 45%; /* buttons scale nicely side by side */
-    }
-    button:hover {
-      background-color: #0056b3;
-    }
-    #demo {
-      margin-top: 25px;
-      font-size: 26px;   /* larger for readability */
-      font-weight: bold;
-      color: #222;
-      word-wrap: break-word; /* prevent overflow */
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mobile Geolocation GPX</title>
+<style>
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: url("gb.svg") center/cover no-repeat, #f0f0f0;
+    margin: 0;
+    height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .card {
+    background: rgba(255,255,255,0.95);
+    border-radius: 20px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+    padding: 30px 20px;
+    text-align: center;
+    width: min(90%, 400px);
+    backdrop-filter: blur(6px);
+  }
+  h1 { margin-bottom: 10px; font-size: 1.8em; }
+  #demo { margin-top: 20px; font-size: 20px; font-weight: bold; color: #222; min-height: 60px; word-wrap: break-word; }
+  .btn-container { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 20px; }
+  button {
+    flex: 1; min-width: 120px; padding: 12px 18px; font-size: 16px;
+    border: none; border-radius: 12px; color: white;
+    background: linear-gradient(135deg, #007bff, #0056b3);
+    cursor: pointer; transition: transform 0.2s ease, background 0.3s;
+  }
+  button:hover { background: linear-gradient(135deg, #0056b3, #003f7f); transform: translateY(-2px); }
+  button:disabled { background: #999; cursor: not-allowed; transform: none; }
+</style>
 </head>
 <body>
 
+<div class="card">
   <h1>📍 Mobile Geolocation</h1>
-  <p>Your coordinates will appear below:</p>
+  <p>Your coordinates will be recorded to GPX:</p>
+  <div class="btn-container">
+    <button id="stopBtn">⏹ Stop</button>
+    <button id="downloadBtn" disabled>⬇ Download GPX</button>
+  </div>
+  <p id="demo" role="status" aria-live="polite">Initializing GPS…</p>
+</div>
 
-  <button onclick="startTracking()">▶ Start</button>
-  <button onclick="stopTracking()">⏹ Stop</button>
+<script>
+const x = document.getElementById("demo");
+const stopBtn = document.getElementById("stopBtn");
+const downloadBtn = document.getElementById("downloadBtn");
 
-  <p id="demo">Fetching location...</p>
+let watchId = null;
+let gpxPoints = [];
+let wakeLock = null;
+let wakeLockTimer = null;
+let lastRecordTime = null;
 
-  <script>
-    const x = document.getElementById("demo");
-    let watchId = null;
-
-    // Automatically start tracking when the page loads
-    window.onload = function() {
-      startTracking();
-    };
-
-    function startTracking() {
-      if (navigator.geolocation) {
-        if (watchId === null) {
-          const options = {
-            enableHighAccuracy: true,   // more accurate GPS (uses more battery)
-            timeout: 10000,            // max wait 10s for position
-            maximumAge: 5000           // reuse last fix if <5s old
-          };
-          watchId = navigator.geolocation.watchPosition(success, error, options);
-          x.innerHTML = "Starting location tracking...";
-        } else {
-          x.innerHTML += "<br><span style='color:green'><b>Already tracking.</b></span>";
-        }
-      } else { 
-        x.innerHTML = "Geolocation is not supported by this browser.";
-      }
+// Wake lock to keep screen awake, re-request every 5 minutes
+async function enableWakeLock() {
+  try {
+    if (wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
     }
-      
-    function success(position) {
-      const lat = position.coords.latitude.toFixed(6);
-      const lon = position.coords.longitude.toFixed(6);
-      const acc = position.coords.accuracy.toFixed(1);
+    wakeLock = await navigator.wakeLock?.request("screen");
+    if (wakeLock) wakeLock.addEventListener('release', () => console.log('Screen unlocked'));
+    // Setup periodic re-request every 5 minutes
+    if (wakeLockTimer) clearInterval(wakeLockTimer);
+    wakeLockTimer = setInterval(enableWakeLock, 5 * 60 * 1000); // 5 minutes
+  } catch (err) {
+    console.warn("Wake Lock not supported:", err);
+  }
+}
+function disableWakeLock() {
+  if (wakeLockTimer) {
+    clearInterval(wakeLockTimer);
+    wakeLockTimer = null;
+  }
+  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+}
 
-      x.innerHTML = "Latitude: " + lat + 
-                    "<br>Longitude: " + lon +
-                    "<br><small>Accuracy: ±" + acc + " meters</small>";
-    }
+// Start tracking automatically on load
+function startTracking() {
+  if (!navigator.geolocation) {
+    x.textContent = "❌ Geolocation not supported.";
+    return;
+  }
+  if (watchId !== null) return;
 
-    function error(error) {
-      switch(error.code) {
-        case error.PERMISSION_DENIED:
-          x.innerHTML = "❌ User denied the request for Geolocation.";
-          break;
-        case error.POSITION_UNAVAILABLE:
-          x.innerHTML = "⚠️ Location information is unavailable.";
-          break;
-        case error.TIMEOUT:
-          x.innerHTML = "⏳ The request to get user location timed out.";
-          break;
-        case error.UNKNOWN_ERROR:
-          x.innerHTML = "❓ An unknown error occurred.";
-          break;
-      }
-    }
+  watchId = navigator.geolocation.watchPosition(success, error, {
+    enableHighAccuracy: true,
+    maximumAge: 5000,
+    timeout: 10000
+  });
 
-    function stopTracking() {
-      if (watchId !== null) {
-        navigator.geolocation.clearWatch(watchId);
-        x.innerHTML += "<br><span style='color:red'><b>Tracking stopped.</b></span>";
-        watchId = null;
-      }
+  gpxPoints = [];
+  downloadBtn.disabled = true;
+  x.textContent = "Recording GPS points…";
+  lastRecordTime = null;
+
+  enableWakeLock();
+}
+
+// Stop tracking
+stopBtn.addEventListener("click", () => {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+    disableWakeLock();
+    downloadBtn.disabled = gpxPoints.length === 0;
+    x.textContent = `Tracking stopped. ${gpxPoints.length} points recorded.`;
+  }
+});
+
+// Download GPX with timestamp in filename
+downloadBtn.addEventListener("click", () => {
+  if (gpxPoints.length === 0) return;
+
+  const gpxHeader = `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="MobileGeolocation" xmlns="http://www.topografix.com/GPX/1/1">
+<trk><name>GPS Track</name><trkseg>`;
+  const gpxFooter = `</trkseg></trk></gpx>`;
+  const gpxBody = gpxPoints.map(p => 
+    `<trkpt lat="${p.lat}" lon="${p.lon}"><time>${new Date(p.time).toISOString()}</time></trkpt>`
+  ).join("\n");
+  const gpxContent = gpxHeader + "\n" + gpxBody + "\n" + gpxFooter;
+
+  const now = new Date();
+  const pad = n => n.toString().padStart(2, '0');
+  const timestamp = `${now.getFullYear().toString().slice(2)}-${pad(now.getMonth()+1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}`;
+
+  const blob = new Blob([gpxContent], { type: "application/gpx+xml" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `track-${timestamp}.gpx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  x.textContent = `GPX file downloaded: track-${timestamp}.gpx`;
+});
+
+// Success callback
+function success(pos) {
+  const lat = pos.coords.latitude.toFixed(6);
+  const lon = pos.coords.longitude.toFixed(6);
+  const acc = pos.coords.accuracy.toFixed(1);
+  const time = pos.timestamp;
+
+  // Speed in m/s, convert to km/h
+  const speed = pos.coords.speed !== null ? pos.coords.speed * 3.6 : null; // m/s to km/h
+
+  // Decide interval based on speed
+  let interval = 3 * 1000; // Default 3 seconds
+  if (speed !== null) {
+    if (speed >= 80) {
+      interval = 20 * 1000;
+    } else if (speed >= 30) {
+      interval = 10 * 1000;
+    } else if (speed >= 3) {
+      interval = 3 * 1000;
     }
-  </script>
+    // else: below 3km/h, keep 3s
+  }
+
+  // Record only if enough time has passed
+  if (
+    !lastRecordTime || 
+    (time - lastRecordTime) >= interval
+  ) {
+    gpxPoints.push({lat, lon, time});
+    lastRecordTime = time;
+  }
+
+  x.innerHTML = `Last point: ${lat}, ${lon}<br>Accuracy: ±${acc}m<br>Speed: ${speed !== null ? speed.toFixed(1) : 'N/A'} km/h<br>Points recorded: ${gpxPoints.length}`;
+}
+
+// Error callback
+function error(err) {
+  const messages = {
+    1: "❌ User denied Geolocation.",
+    2: "⚠️ Location unavailable.",
+    3: "⏳ Geolocation timed out."
+  };
+  x.textContent = messages[err.code] || "❓ Unknown error.";
+}
+
+// Auto-start tracking when page loads
+window.addEventListener("load", startTracking);
+window.addEventListener("beforeunload", disableWakeLock);
+</script>
 
 </body>
 </html>
